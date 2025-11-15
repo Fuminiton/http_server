@@ -1,4 +1,3 @@
 .vscode
-/src/server/server
-/src/server/*.o
-/build/*
+server
+client
