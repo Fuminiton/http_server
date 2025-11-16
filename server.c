@@ -83,19 +83,16 @@ int main(int argc, char* argv[]) {
         error("Connecting a client failed");
     }
 
-    return_code = read(connect_fd, buf, MAX_BUFFER_SIZE);
+    return_code = recv(connect_fd, buf, MAX_BUFFER_SIZE, 0);
     if (return_code < 0) {
         close(connect_fd);
         close(listen_fd);
-        error("Reading failed");
+        error("Recv failed");
     }
 
-    return_code = write(1, buf, return_code);
-    if (return_code < 0) {
-        close(connect_fd);
-        close(listen_fd);
-        error("Writing failed");
-    }
+    write(1, buf, return_code);
+    return_code = send(connect_fd, buf, return_code, 0);
+
     close(connect_fd);
     close(listen_fd);
 

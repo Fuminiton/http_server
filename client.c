@@ -56,6 +56,7 @@ int main(int argc, char* argv[]) {
     char buf[MAX_BUFFER_SIZE];
     char* hostname;
     int port;
+    int return_code;
     
     if (argc != 3) {
         printf("usage: %s [ip address] [port]\n", argv[0]);
@@ -66,8 +67,23 @@ int main(int argc, char* argv[]) {
 
     socket_fd = tcp_connect(hostname, port);
     puts("Waiting for your standard input...");
+    
     input = fgets(buf, MAX_BUFFER_SIZE, stdin);
-    write(socket_fd, input, strlen(input));
+    return_code = send(socket_fd, input, strlen(input), 0);
+    if (return_code < 0) {
+        close(socket_fd);
+        error("Send failed");
+    }
+
+    return_code = recv(socket_fd, buf, sizeof(buf), 0);
+    if (return_code < 0) {
+        close(socket_fd);
+        error("Recv failed");
+    }
+
+    write(1, buf, return_code);
+
     close(socket_fd);
+    
     return 0;
 }
