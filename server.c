@@ -7,8 +7,6 @@
 
 #define PORT 11111
 #define MAX_CONNECTION 3
-#define MAX_BUFFER_SIZE 1024
-
 
 int tcp_listen(int port) {
     int socket_fd;
@@ -90,14 +88,40 @@ int connect_client(int listen_fd) {
     return connect_fd;
 }
 
+int calculate(int val1, int val2, char op) {
+    switch (op){ 
+        case '+':
+            return val1 + val2;
+        case '-':
+            return val1 - val2;
+        case '*':
+            return val1 * val2;
+        case '/':
+            return val1 / val2;
+        default:
+            printf("error");
+            return 0;
+    }
+}
+
 void handle_client(int connect_fd) {
-    char* buf[MAX_BUFFER_SIZE];
-    int return_code = recv(connect_fd, buf, MAX_BUFFER_SIZE, 0);
+    char buf[100];
+    int return_code = recv(connect_fd, buf, 100, 0);
     if (return_code < 0) {
         close(connect_fd);
     }
-    write(1, buf, return_code);
-    return_code = send(connect_fd, buf, return_code, 0);
+
+    int val1;
+    int val2;
+    char op;
+    sscanf(buf, "%d%c%d", &val1, &op, &val2);
+
+    int result;
+    result = calculate(val1, val2, op);
+    char answer[10];
+    int len = snprintf(answer, sizeof(answer), "%d\n", result);
+
+    return_code = send(connect_fd, answer, len, 0);
     close(connect_fd);
 }
 
@@ -108,13 +132,12 @@ int main(int argc, char* argv[]) {
     listen_fd = tcp_listen(PORT);
     printf("Server is running on port %d...\n", PORT);
 
-    while (1) {
-        connect_fd = connect_client(listen_fd);
-        if (connect_fd < 0) {
-            continue;
-        }
-        handle_client(connect_fd);
+    connect_fd = connect_client(listen_fd);
+    if (connect_fd < 0) {
+        printf("error\n");
     }
+
+    handle_client(connect_fd);
     close(listen_fd);
 
     return 0;
