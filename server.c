@@ -1,144 +1,380 @@
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
+#include <string.h>
+#include <stdarg.h>
 #include <unistd.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
-#define PORT 11111
-#define MAX_CONNECTION 3
+#define MAX_CONNECTIONS 10
+#define MAX_RESPONSE_SIZE 8192
+#define MAX_RESULT_STR 32
+#define BUFFER_SIZE 4096
 
-int tcp_listen(int port) {
-    int socket_fd;
-    struct sockaddr_in addr;
-    int return_code;
-    int opt = 1;   // 1: valid
+#define HTTP_OK 200
+#define HTTP_BAD_REQUEST 400
+#define HTTP_NOT_FOUND 404
+#define HTTP_INTERNAL_ERROR 500
 
-    // create socket
-    socket_fd = socket(
-        AF_INET,
-        SOCK_STREAM,
-        0
-    );
-    if (socket_fd < 0) {
-        fprintf(stderr, "Creating socket failed.\n");
-        exit(1);
-    }
 
-    // set address
-    bzero((char *) &addr, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
+/* =======================================================================
+ * データ構造
+ * ==================================================================== */
 
-    // set socket options
-    return_code = setsockopt(
-        socket_fd,
-        SOL_SOCKET,
-        SO_REUSEADDR,
-        &opt,
-        sizeof(opt)
-    );
-    if (return_code < 0) {
-        close(socket_fd);
-        fprintf(stderr, "Setting socket options failed.\n");
-        exit(1);
-    }
+typedef struct {
+    char *method;
+    char *path;
+    char *protocol;
+} HTTPRequest;
 
-    // bind
-    return_code = bind(
-        socket_fd,
-        (struct sockaddr *) &addr,
-        sizeof(addr)
-    );
-    if (return_code < 0) {
-        close(socket_fd);
-        fprintf(stderr, "Binding failed.\n");
-        exit(1);
-    }
 
-    // listen
-    return_code = listen(
-        socket_fd,
-        MAX_CONNECTION
-    );
-    if (return_code < 0) {
-        close(socket_fd);
-        fprintf(stderr, "Listening failed.\n");
-        exit(1);   
-    }
+/* =======================================================================
+ * ユーティリティ関数
+ * ==================================================================== */
 
-    return socket_fd;
+void log_exit(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "FATAL: ");
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+    va_end(ap);
+    exit(EXIT_FAILURE);
 }
 
-int connect_client(int listen_fd) {
-    int connect_fd;
-    struct sockaddr_storage client_addr;
-    unsigned int client_addr_size = sizeof(client_addr);
-
-    connect_fd = accept(
-        listen_fd,
-        (struct sockaddr *) &client_addr,
-        &client_addr_size
-    );
-    if (connect_fd < 0) {
-        fprintf(stderr, "Connecting a client failed\n");
-    }
-
-    return connect_fd;
+void log_error(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "ERROR: ");
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+    va_end(ap);
 }
 
-int calculate(int val1, int val2, char op) {
-    switch (op){ 
-        case '+':
-            return val1 + val2;
-        case '-':
-            return val1 - val2;
-        case '*':
-            return val1 * val2;
-        case '/':
-            return val1 / val2;
-        default:
-            printf("error");
-            return 0;
+void* xmalloc(size_t size) {
+    void *pointer = malloc(size);
+    if (!pointer) {
+        log_exit("Memory allocation failed for %zu butes", size);
     }
+    memset(pointer, 0, size);
+    return pointer;
 }
 
-void handle_client(int connect_fd) {
-    char buf[100];
-    int return_code = recv(connect_fd, buf, 100, 0);
-    if (return_code < 0) {
-        close(connect_fd);
+char* xstrdup(const char *s) {
+    if (!s) {
+        return NULL;
     }
-
-    int val1;
-    int val2;
-    char op;
-    sscanf(buf, "%d%c%d", &val1, &op, &val2);
-
-    int result;
-    result = calculate(val1, val2, op);
-    char answer[10];
-    int len = snprintf(answer, sizeof(answer), "%d\n", result);
-
-    return_code = send(connect_fd, answer, len, 0);
-    close(connect_fd);
+    char *copy = strdup(s);
+    if (!copy) {
+        log_exit("String duplication failed");
+    }
+    return copy;
 }
 
-int main(int argc, char* argv[]) {
-    int listen_fd;
-    int connect_fd;
-   
-    listen_fd = tcp_listen(PORT);
-    printf("Server is running on port %d...\n", PORT);
 
-    connect_fd = connect_client(listen_fd);
-    if (connect_fd < 0) {
-        printf("error\n");
+/* =======================================================================
+ * HTTPリクエスト処理
+ * ==================================================================== */
+
+HTTPRequest* create_request() {
+    HTTPRequest *request = xmalloc(sizeof(HTTPRequest));
+    return request;
+}
+
+int parse_request(HTTPRequest *request, char *buffer) {
+    if (!request || !buffer) {
+        return -1;
     }
 
-    handle_client(connect_fd);
-    close(listen_fd);
+    request->method = strtok(buffer, " ");
+    request->path = strtok(NULL, " ");
+    request->protocol = strtok(NULL, "\r\n");
+
+    if (!request->method || !request->path || !request->protocol) {
+        log_error("Invalid HTTP request format");
+        return -1;
+    }
 
     return 0;
+}
+
+void free_request(HTTPRequest *request) {
+    if (!request) {
+        return ;
+    }
+    free(request->method);
+    free(request->path);
+    free(request->protocol);
+    free(request);
+}
+
+
+/* ============================================================================
+ * HTTPレスポンス生成
+ * ========================================================================== */
+
+void build_response(char *buffer, size_t buffer_size,
+                    int status_code, const char *status_text,
+                    int content_length, const char *content) { 
+    snprintf(buffer, buffer_size,
+            "HTTP/1.1 %d %s\r\n"
+            "Content-Length: %d\r\n"
+            "\r\n"
+            "%s\n",
+            status_code, status_text,
+            content_length, content
+        );
+}
+
+void build_success_response(char *buffer, size_t buffer_size, int result) {
+    char content[MAX_RESULT_STR];
+
+    snprintf(content, sizeof(content), "%d", result);
+    build_response(buffer, buffer_size, HTTP_OK, "OK",
+                strlen(content), content);
+}
+
+void build_error_response(char *buffer, size_t buffer_size,
+                    int status_code, const char *message) {
+    const char *status_text;
+    switch (status_code) {
+    case HTTP_BAD_REQUEST:
+        status_text = "Bad Request";
+        break;
+    case HTTP_NOT_FOUND:
+        status_text = "Not Found";
+        break;
+    case HTTP_INTERNAL_ERROR:
+        status_text = "Internal Server Error";
+        break;
+    default:
+        status_text = "Error";
+    }
+    build_response(buffer, buffer_size, status_code, status_text,
+                strlen(message), message);
+}
+
+
+/* ============================================================================
+ * 計算機能
+ * ========================================================================== */
+
+int parse_calc_query(const char *path, int *v1_p, char *op_p, int *v2_p) {
+    int matched;
+
+    if (!path) {
+        return -1;
+    }
+
+    matched = sscanf(path, "/calc?query=%d%c%d",
+                        v1_p, op_p, v2_p);
+    if (matched != 3) {
+        log_error("Failed to parse calc query: %s", path);
+    }
+    if (strchr("+-*/", *op_p) == NULL) {
+        log_error("Invalid operator: %c", *op_p);
+    }
+
+    return 0;
+}
+
+int calculate(int v1, char op, int v2, int *result) {
+    switch (op)
+    {
+    case '+':
+        *result = v1 + v2;
+        break;
+    case '-':
+        *result = v1 - v2;
+        break;
+    case '*':
+        *result = v1 * v2;
+        break;
+    case '/':
+        if (v2 == 0) {
+            log_error("Division by zero");
+            return -1;
+        }
+        *result = v1 / v2;
+        break;
+    default:
+        return -1;
+    }
+
+    return 0;
+}
+
+int handle_calculator_endpoint(const HTTPRequest *request, char *response, size_t response_size) {
+    int v1, v2;
+    char op;
+    int result;
+
+    if (parse_calc_query(request->path, &v1, &op, &v2) < 0) {
+        build_error_response(response, response_size, HTTP_BAD_REQUEST,
+                           "Invalid query format. Use: /calc?query=<num><op><num>");
+        return -1;
+    }
+
+    if (calculate(v1, op, v2, &result) < 0) {
+        build_error_response(response, response_size, HTTP_BAD_REQUEST,
+                           "Calculation error (e.g., division by zero)");
+        return -1;
+    }
+
+    build_success_response(response, response_size, result);
+    return 0;
+}
+
+
+/* ============================================================================
+ * リクエストハンドラ
+ * ========================================================================== */
+
+void handle_request(const HTTPRequest *request, int client_socket) {
+    char response[MAX_RESPONSE_SIZE];
+
+    if (strcmp(request->method, "GET") != 0) {
+        build_error_response(response, sizeof(response),
+                            HTTP_BAD_REQUEST, "Only GET method is supported");
+        write(client_socket, response, strlen(response));
+        return ;
+    }
+
+    if (strncmp(request->path, "/calc?query=", 12) != 0) {
+        build_error_response(response, sizeof(response),
+                            HTTP_NOT_FOUND, "Not Found. Use: /calc?query=<num><op><num>");
+        write(client_socket, response, strlen(response));
+        return ;
+    }
+
+    handle_calculator_endpoint(request, response, sizeof(response));
+    ssize_t bytes_written = write(client_socket, response, strlen(response));
+    if (bytes_written < 0) {
+        log_error("Failed to send response: %s", strerror(errno));
+    }
+}
+
+
+/* =======================================================================
+ * ネットワーク処理
+ * ==================================================================== */
+
+int create_server_socket(int port) {
+    int server_socket;
+    struct sockaddr_in server_address;
+    int opt = 1;
+
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket < 0) {
+        log_exit("Socket creation failed: %s", strerror(errno));
+    }
+
+    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        close(server_socket);
+        log_exit("Setsockopt failed: %s", strerror(errno));
+    }
+
+    memset(&server_address, 0, sizeof(server_address));
+    server_address.sin_family = AF_INET;  // IPv4
+    server_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);;  // localhost only
+    server_address.sin_port = htons(port);
+
+    if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
+        close(server_socket);
+        log_exit("Bind failed: %s", strerror(errno));
+    }
+
+    if (listen(server_socket, MAX_CONNECTIONS) < 0) {
+        close(server_socket);
+        log_exit("Listen failed] %s", strerror(errno));
+    }
+
+    return server_socket;
+}
+
+char* receive_request(int client_socket) {
+    char *buffer = xmalloc(BUFFER_SIZE);
+
+    ssize_t bytes_read = read(client_socket, buffer, BUFFER_SIZE - 1);
+
+    if (bytes_read < 0) {
+        log_error("Failed to read from client: %s", strerror(errno));
+        free(buffer);
+        return NULL;
+    }
+    if (bytes_read == 0) {
+        free(buffer);
+        return NULL;
+    }
+    buffer[bytes_read] = '\0';
+
+    return buffer;
+}
+
+void handle_client(int client_socket) {
+    char *buffer;
+    HTTPRequest *request;
+
+    buffer = receive_request(client_socket);
+    if (!buffer) {
+        free_request(request);
+        return ;
+    }
+
+    request = create_request();
+    if (parse_request(request, buffer) != 0) {
+        char response[MAX_RESPONSE_SIZE];
+        build_error_response(response, sizeof(response),
+                            HTTP_BAD_REQUEST, "Invalid HTTP Request");
+        write(client_socket, response, strlen(response));
+        free(buffer);
+        free_request(request);
+        return ;
+    }
+    free(buffer);
+    handle_request(request, client_socket);
+}
+
+
+/* =======================================================================
+ * メインループ
+ * ==================================================================== */
+
+void service(int port) {
+    int server_socket;
+    int client_socket;
+    struct sockaddr_in client_address;
+    socklen_t client_address_length = sizeof(client_address);
+
+    server_socket = create_server_socket(port);
+
+    client_socket = accept(server_socket,
+                            (struct sockaddr *)&client_address,
+                            &client_address_length);
+    if (client_socket < 0) {
+        log_error("Accept failed: %s", strerror(errno));
+    }
+    handle_client(client_socket);
+    close(client_socket);
+
+    close(server_socket);
+}
+
+
+/* =======================================================================
+ * メイン関数
+ * ==================================================================== */
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        log_exit("Missing required arguments.\nUsage: ./http_server <port>");
+    }
+    if (!(1024 <= atoi(argv[1]) && atoi(argv[1]) < 49152)) {
+        log_exit("Invalid port number: %s\nUsage: 1024~49151", argv[1]);
+    }
+
+    service(atoi(argv[1]));
+
+    return EXIT_SUCCESS;
 }

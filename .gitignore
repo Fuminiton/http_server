@@ -1,4 +1,3 @@
 .vscode
-server
-client
-calculator
+http_server
+http_client
