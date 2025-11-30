@@ -93,14 +93,14 @@ int parse_request(HTTPRequest *request, const char *buffer) {
 
     int matched = sscanf(buffer, "%15s %255s %15s", method, path, protocol);
 
-    request->method = xstrdup(method);
-    request->path = xstrdup(path);
-    request->protocol = xstrdup(protocol);
-
-    if (!request->method || !request->path || !request->protocol) {
+    if (matched != 3) {
         log_error("Invalid HTTP request format");
         return -1;
     }
+
+    request->method = xstrdup(method);
+    request->path = xstrdup(path);
+    request->protocol = xstrdup(protocol);
 
     return 0;
 }
@@ -358,14 +358,17 @@ void service(int port) {
 
     server_socket = create_server_socket(port);
 
-    client_socket = accept(server_socket,
-                            (struct sockaddr *)&client_address,
-                            &client_address_length);
-    if (client_socket < 0) {
-        log_error("Accept failed: %s", strerror(errno));
+    while (1) {
+        client_socket = accept(server_socket,
+                                (struct sockaddr *)&client_address,
+                                &client_address_length);
+        if (client_socket < 0) {
+            log_error("Accept failed: %s", strerror(errno));
+            continue;
+        }
+        handle_client(client_socket);
+        close(client_socket);
     }
-    handle_client(client_socket);
-    close(client_socket);
 
     close(server_socket);
 }
