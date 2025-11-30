@@ -37,6 +37,12 @@ make test
 ./http_server 8080
 ```
 
+### クライアント起動
+
+```bash
+./http_client 127.0.0.1 8080
+```
+
 
 ## TODO
 
