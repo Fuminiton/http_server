@@ -22,7 +22,7 @@ make server
 make client
 ```
 
-### テスト
+## テスト
 
 ```bash
 make test
