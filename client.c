@@ -66,7 +66,6 @@ int main(int argc, char* argv[]) {
     port = atoi(argv[2]);
 
     socket_fd = tcp_connect(hostname, port);
-    puts("Waiting for your standard input...");
     
     input = fgets(buf, MAX_BUFFER_SIZE, stdin);
     return_code = send(socket_fd, input, strlen(input), 0);
