@@ -55,7 +55,7 @@ void log_error(const char *fmt, ...) {
 void* xmalloc(size_t size) {
     void *pointer = malloc(size);
     if (!pointer) {
-        log_exit("Memory allocation failed for %zu butes", size);
+        log_exit("Memory allocation failed for %zu bytes", size);
     }
     memset(pointer, 0, size);
     return pointer;
@@ -82,14 +82,20 @@ HTTPRequest* create_request() {
     return request;
 }
 
-int parse_request(HTTPRequest *request, char *buffer) {
+int parse_request(HTTPRequest *request, const char *buffer) {
     if (!request || !buffer) {
         return -1;
     }
 
-    request->method = strtok(buffer, " ");
-    request->path = strtok(NULL, " ");
-    request->protocol = strtok(NULL, "\r\n");
+    char method[16];
+    char path[256];
+    char protocol[16];
+
+    int matched = sscanf(buffer, "%15s %255s %15s", method, path, protocol);
+
+    request->method = xstrdup(method);
+    request->path = xstrdup(path);
+    request->protocol = xstrdup(protocol);
 
     if (!request->method || !request->path || !request->protocol) {
         log_error("Invalid HTTP request format");
@@ -171,9 +177,11 @@ int parse_calc_query(const char *path, int *v1_p, char *op_p, int *v2_p) {
                         v1_p, op_p, v2_p);
     if (matched != 3) {
         log_error("Failed to parse calc query: %s", path);
+        return -1;
     }
     if (strchr("+-*/", *op_p) == NULL) {
         log_error("Invalid operator: %c", *op_p);
+        return -1;
     }
 
     return 0;
@@ -233,6 +241,7 @@ int handle_calculator_endpoint(const HTTPRequest *request, char *response, size_
 
 void handle_request(const HTTPRequest *request, int client_socket) {
     char response[MAX_RESPONSE_SIZE];
+    ssize_t bytes_written;
 
     if (strcmp(request->method, "GET") != 0) {
         build_error_response(response, sizeof(response),
@@ -249,7 +258,7 @@ void handle_request(const HTTPRequest *request, int client_socket) {
     }
 
     handle_calculator_endpoint(request, response, sizeof(response));
-    ssize_t bytes_written = write(client_socket, response, strlen(response));
+    bytes_written = write(client_socket, response, strlen(response));
     if (bytes_written < 0) {
         log_error("Failed to send response: %s", strerror(errno));
     }
@@ -318,7 +327,6 @@ void handle_client(int client_socket) {
 
     buffer = receive_request(client_socket);
     if (!buffer) {
-        free_request(request);
         return ;
     }
 
@@ -334,6 +342,7 @@ void handle_client(int client_socket) {
     }
     free(buffer);
     handle_request(request, client_socket);
+    free_request(request);
 }
 
 
