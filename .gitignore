@@ -1,0 +1,4 @@
+.vscode
+*.o
+http_server
+http_client
